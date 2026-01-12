@@ -1,3 +1,3 @@
 #!/bin/bash
 
-dotnet run
+dotnet run /unsafe

@@ -1,5 +1,7 @@
 ﻿using System.Runtime.InteropServices;
-
+﻿using System.Runtime.InteropServices;
+using JackCS;
+using Microsoft.Win32.SafeHandles;
 
 var appsettings = new ConfigurationBuilder()
     .SetBasePath(Directory.GetCurrentDirectory())
@@ -98,6 +100,99 @@ void InspectPorts(LadspaDescriptor d)
         }
     }
 }
+
+// JACK --------------
+var jackTest = new JackTest();
+
+jackTest.Test();
+
+class JackTest 
+{
+    public void Test() 
+    {
+        unsafe
+        {
+            Jack    _jack = Jack.GetApi();
+
+            Console.WriteLine(_jack);
+
+            Client* _client = _jack.ClientOpen("MiStomp", JackOptions.JackNullOption, null);;
+
+            var sampleRate = _jack.GetSampleRate(_client);
+
+            Console.WriteLine(sampleRate);
+
+            uint bufferSize = 512;
+
+            _jack.SetBufferSize(_client, bufferSize);
+
+            uint channels = 1; // mono guitar processor
+
+            Port*[] _ports = new Port*[channels];
+
+            int i = 0;
+
+            _ports[i] = _jack.PortRegister(_client, $"channel_{i + 1}", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsOutput, 0);
+
+            GCHandle _this;
+
+            _this = GCHandle.Alloc(this, GCHandleType.Normal);
+
+            var setProcessCallback = _jack.SetProcessCallback(_client, new PfnJackProcessCallback(JackCallback), (void*)GCHandle.ToIntPtr(_this));
+
+            Console.WriteLine($"setProcessCallback: {setProcessCallback}");
+            if (setProcessCallback != 0)
+            {
+                Console.WriteLine("ERROR!! didnae set process callback");    
+            }
+
+            byte** audioPorts = _jack.GetPorts(_client, (byte*)null, Jack.DefaultAudioType, (uint)(JackPortFlags.JackPortIsPhysical | JackPortFlags.JackPortIsInput));
+
+            if (audioPorts == null)
+            {
+                Console.WriteLine("ERROR!! didnae get audio ports");
+            }
+
+            for (i = 0; audioPorts[i] != null; i++)
+            {
+                Console.WriteLine($"audioPort[{i}]");
+
+                int ret = _jack.Connect(_client, _jack.PortName(_ports[i % channels]), audioPorts[i]);
+
+                Console.WriteLine($"Connect ref: {ret}");
+
+                if (ret is not 0 and not 17)
+                {
+                    Console.WriteLine("ERROR!! didnae get connect response expected");
+                }
+
+            }
+
+            var activate = _jack.Activate(_client);
+
+            Console.WriteLine(activate);
+            if (activate != 0)
+            {
+                Console.WriteLine("ERROR!! didnae activate");
+            }
+
+            Console.Write("Press RETURN to exit ...");
+            Console.Read();
+
+            static int JackCallback(uint frames, void* usrData) 
+            {
+                unsafe
+                {
+                    GCHandle    handle = GCHandle.FromIntPtr((IntPtr)usrData);
+
+                    return 0;
+                }
+            }
+        }
+    }
+
+}
+
 [StructLayout(LayoutKind.Sequential)]
 public struct LadspaDescriptor
 {
@@ -166,3 +261,9 @@ public enum PortDescriptor : uint
     Audio = 0x8
 }
 
+// JACK now -----------------------------------------
+
+public interface IAudioProcessor
+{
+    void Process(ReadOnlySpan<float> input, Span<float> output);
+}
