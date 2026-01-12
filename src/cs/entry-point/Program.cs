@@ -126,13 +126,34 @@ class JackTest
 
             _jack.SetBufferSize(_client, bufferSize);
 
-            uint channels = 1; // mono guitar processor
-
-            Port*[] _ports = new Port*[channels];
-
             int i = 0;
 
-            _ports[i] = _jack.PortRegister(_client, $"channel_{i + 1}", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsOutput, 0);
+            Port* inPort /*_ports[i++]*/ = _jack.PortRegister(_client, $"dry_guitar_in", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsInput, 0);
+            Port* outPort /*_ports[i++]*/ = _jack.PortRegister(_client, $"wet_guitar_out", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsOutput, 0);
+
+            // 2. Automated Connection for Audio IN
+            // We look for Physical Outputs (Capture devices/Mics)
+            byte** physicalOutputs = _jack.GetPorts(_client, (byte*)null, Jack.DefaultAudioType, 
+                (uint)(JackPortFlags.JackPortIsPhysical | JackPortFlags.JackPortIsOutput));
+
+            if (physicalOutputs != null)
+            {
+                // Connect the first physical output (System Capture 1) to our Input Port
+                _jack.Connect(_client, physicalOutputs[0], _jack.PortName(inPort));
+                _jack.Free(physicalOutputs); // Clean up the list memory
+            }
+
+            // 3. Automated Connection for Audio OUT
+            // We look for Physical Inputs (Playback devices/Speakers)
+            byte** physicalInputs = _jack.GetPorts(_client, (byte*)null, Jack.DefaultAudioType, 
+                (uint)(JackPortFlags.JackPortIsPhysical | JackPortFlags.JackPortIsInput));
+
+            if (physicalInputs != null)
+            {
+                // Connect our Output Port to the first physical input (System Playback 1)
+                _jack.Connect(_client, _jack.PortName(outPort), physicalInputs[0]);
+                _jack.Free(physicalInputs);
+            }
 
             GCHandle _this;
 
@@ -144,28 +165,6 @@ class JackTest
             if (setProcessCallback != 0)
             {
                 Console.WriteLine("ERROR!! didnae set process callback");    
-            }
-
-            byte** audioPorts = _jack.GetPorts(_client, (byte*)null, Jack.DefaultAudioType, (uint)(JackPortFlags.JackPortIsPhysical | JackPortFlags.JackPortIsInput));
-
-            if (audioPorts == null)
-            {
-                Console.WriteLine("ERROR!! didnae get audio ports");
-            }
-
-            for (i = 0; audioPorts[i] != null; i++)
-            {
-                Console.WriteLine($"audioPort[{i}]");
-
-                int ret = _jack.Connect(_client, _jack.PortName(_ports[i % channels]), audioPorts[i]);
-
-                Console.WriteLine($"Connect ref: {ret}");
-
-                if (ret is not 0 and not 17)
-                {
-                    Console.WriteLine("ERROR!! didnae get connect response expected");
-                }
-
             }
 
             var activate = _jack.Activate(_client);
