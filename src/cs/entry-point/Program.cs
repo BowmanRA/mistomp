@@ -1,5 +1,5 @@
 ﻿using System.Runtime.InteropServices;
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using JackCS;
 using Microsoft.Win32.SafeHandles;
 
@@ -106,6 +106,9 @@ var jackTest = new JackTest();
 
 jackTest.Test();
 
+[DllImport("libjack.so.0", EntryPoint="jack_port_get_buffer")]
+static extern unsafe void* JackPortGetBuffer(IntPtr port, uint nFrames);
+
 class JackTest 
 {
     public void Test() 
@@ -128,8 +131,11 @@ class JackTest
 
             int i = 0;
 
-            Port* inPort /*_ports[i++]*/ = _jack.PortRegister(_client, $"dry_guitar_in", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsInput, 0);
-            Port* outPort /*_ports[i++]*/ = _jack.PortRegister(_client, $"wet_guitar_out", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsOutput, 0);
+            Port* inPortPre /*_ports[i++]*/ = _jack.PortRegister(_client, $"guitar_in_pre", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsInput, 0);
+            Port* outPortPre /*_ports[i++]*/ = _jack.PortRegister(_client, $"guitar_out_pre", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsOutput, 0);
+
+            Port* inPortPost = null; // /*_ports[i++]*/ = _jack.PortRegister(_client, $"guitar_in_post", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsInput, 0);
+            Port* outPortPost = null; // /*_ports[i++]*/ = _jack.PortRegister(_client, $"guitar_out_post", Jack.DefaultAudioType, (uint)JackPortFlags.JackPortIsOutput, 0);
 
             // 2. Automated Connection for Audio IN
             // We look for Physical Outputs (Capture devices/Mics)
@@ -139,7 +145,17 @@ class JackTest
             if (physicalOutputs != null)
             {
                 // Connect the first physical output (System Capture 1) to our Input Port
-                _jack.Connect(_client, physicalOutputs[0], _jack.PortName(inPort));
+                _jack.Connect(_client, physicalOutputs[0], _jack.PortName(inPortPre));
+
+                if (true && null != inPortPost) // TODO :: bounds check somehow!! physicalOutputs.Length >= 2)
+                {
+                    _jack.Connect(_client, physicalOutputs[1], _jack.PortName(inPortPost));
+                }
+                else
+                {
+                    Console.WriteLine("WARN!! could not connect post guitar in");
+                }
+
                 _jack.Free(physicalOutputs); // Clean up the list memory
             }
 
@@ -151,7 +167,17 @@ class JackTest
             if (physicalInputs != null)
             {
                 // Connect our Output Port to the first physical input (System Playback 1)
-                _jack.Connect(_client, _jack.PortName(outPort), physicalInputs[0]);
+                _jack.Connect(_client, _jack.PortName(outPortPre), physicalInputs[0]);
+
+                if (true && null != outPortPost) // TODO :: bounds check somehow!! //physicalOutputs.Length >= 2)
+                {
+                    _jack.Connect(_client, physicalOutputs[1], _jack.PortName(outPortPost));
+                }
+                else
+                {
+                    Console.WriteLine("WARN!! could not connect post guitar out");
+                }
+
                 _jack.Free(physicalInputs);
             }
 
@@ -178,12 +204,32 @@ class JackTest
             Console.Write("Press RETURN to exit ...");
             Console.Read();
 
-            static int JackCallback(uint frames, void* usrData) 
+            int JackCallback(uint frames, void* usrData) 
             {
+                
+                // Console.Write($"{frames}");
+                // Console.Write($"{usrData}");
                 unsafe
                 {
-                    GCHandle    handle = GCHandle.FromIntPtr((IntPtr)usrData);
+                    //GCHandle    handle = GCHandle.FromIntPtr((IntPtr)usrData);
+		            //JackBackend @jb  = (Jack.JackBackend)handle.Target!;
+                    
+                    float* preInBuf = (float*)_jack.PortGetBuffer(inPortPre, frames);
+                    float* preOutBuf = (float*)_jack.PortGetBuffer(outPortPre, frames);
 
+
+                    //float* postInBuf = (float*)_jack.PortGetBuffer(inPortPost, frames);
+                    //float* postOutBuf = (float*)_jack.PortGetBuffer(outPortPost, frames);
+
+                    // Console.Write(buf[0]);
+
+                    //
+                    // void* inPre = JackPortGetBuffer(inPort, frames);
+
+                    for (int i = 0; i < frames; i++)
+                    {
+                        // preOutBuf[i] = preInBuf[i] * 0.05f;
+                    }
                     return 0;
                 }
             }
