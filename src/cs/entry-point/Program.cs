@@ -213,32 +213,28 @@ class JackTest
                 Console.Write("Press RETURN to exit ...");
                 Console.Read();
 
+                Console.WriteLine("Closing JACK");
+                _jack.ClientClose(_client);
+
                 int JackCallback(uint frames, void* usrData) 
                 {
                     try 
-                    {
-                        // Console.Write($"{frames}");
-                        // Console.Write($"{usrData}");
+                    {       
                         unsafe
                         {
-                            //GCHandle    handle = GCHandle.FromIntPtr((IntPtr)usrData);
-                            //JackBackend @jb  = (Jack.JackBackend)handle.Target!;
-                            
-                            //float* preInBuf = (float*)_jack.PortGetBuffer(inPortPre, frames);
-                            //float* preOutBuf = (float*)_jack.PortGetBuffer(outPortPre, frames);
+                            const float ATTENUATION_GAIN = 0.01f;
+                           
+                            float* preInBuf = (float*)_jack.PortGetBuffer(inPortPre, frames);
+                            float* preOutBuf = (float*)_jack.PortGetBuffer(outPortPre, frames);
 
+                            float* postInBuf = (float*)_jack.PortGetBuffer(inPortPost, frames);
+                            float* postOutBuf = (float*)_jack.PortGetBuffer(outPortPost, frames);
 
-                            //float* postInBuf = (float*)_jack.PortGetBuffer(inPortPost, frames);
-                            //float* postOutBuf = (float*)_jack.PortGetBuffer(outPortPost, frames);
-
-                            // Console.Write(buf[0]);
-
-                            //
-                            // void* inPre = JackPortGetBuffer(inPort, frames);
 
                             for (int i = 0; i < frames; i++)
                             {
-                                // preOutBuf[i] = preInBuf[i] * 0.05f;
+                                preOutBuf[i] = preInBuf[i] * ATTENUATION_GAIN;
+                                postOutBuf[i] = postInBuf[i] * ATTENUATION_GAIN;
                             }
                             
                         }
