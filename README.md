@@ -2,6 +2,8 @@
 Minimal Stomp box
 
 ## Requisites
+Jack
+LADSPA plugins
 .NET Core 8.x
 
 ## Ladspa
