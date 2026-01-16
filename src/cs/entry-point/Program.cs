@@ -1,5 +1,7 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
+using System.Xml.Serialization;
 using JackCS;
 using Microsoft.Win32.SafeHandles;
 
@@ -14,15 +16,23 @@ Console.WriteLine($"Discovering LADSPA plugins in directory {ladspaSettings.Plug
 int pluginCount = 0;
 var loader = new LadspaLoader();
 
+Dictionary<nuint, IntPtr> LADSPAPlugins = new Dictionary<nuint, nint>();
+LadspaDescriptor? sc1 = null;
+
+
 foreach (var file in Directory.GetFiles(ladspaSettings.PluginDirectory, $"*{ladspaSettings.PluginFileExtension}"))
 {
     Console.WriteLine($"\t{file}");
     ++pluginCount;
 
-    var descriptor = loader.LoadDescriptor(file);
+    IntPtr ptr = IntPtr.Zero;
+
+    var descriptor = loader.LoadDescriptor(file, out ptr);
 
     if (descriptor.HasValue)
     {
+
+
         var d = descriptor.Value;
         string name = GetSafeString(d.Name);
         string maker = GetSafeString(d.Maker);
@@ -32,25 +42,42 @@ foreach (var file in Directory.GetFiles(ladspaSettings.PluginDirectory, $"*{lads
         Console.WriteLine($"\t\tID: {d.UniqueID}");
         Console.WriteLine($"\t\tNumber of Ports: {d.PortCount}");
 
-        for (var port = 0; port < d.PortCount; port++)
+        if (d.UniqueID == 1425)
         {
-            // Each port descriptor is a 32-bit uint
-            uint portDescriptor = (uint)Marshal.ReadInt32(d.PortDescriptors, port * sizeof(uint));
-            var pd = (PortDescriptor)portDescriptor;
+            sc1 = d; // put into a dict for heaven's sake!!
+            LADSPAPlugins[d.UniqueID] = ptr;
+        }
 
-            IntPtr portNamePtr = Marshal.ReadIntPtr(d.PortNames, port * IntPtr.Size);
+
+        // Use nuint for the loop counter to match d.PortCount
+        for (nuint port = 0; port < d.PortCount; port++)
+        {
+            // 1. Read PortDescriptor (int / 32-bit)
+            // Offset is: port index * 4 bytes
+            int portDescValue = Marshal.ReadInt32(d.PortDescriptors, (int)port * sizeof(int));
+            var pd = (PortDescriptor)portDescValue;
+
+            // 2. Read PortName (pointer / 8-byte)
+            // Offset is: port index * IntPtr.Size (8 bytes on 64-bit)
+            IntPtr portNamePtr = Marshal.ReadIntPtr(d.PortNames, (int)port * IntPtr.Size);
             string portName = GetSafeString(portNamePtr);
 
             Console.Write($"\t\t\tPort {port} - {portName}: ");
 
-            if (pd.HasFlag(PortDescriptor.Audio))
+            // 3. Evaluate Flags
+            // It's safer to check bits directly or use HasFlag
+            bool isAudio = (pd & PortDescriptor.Audio) != 0;
+            bool isControl = (pd & PortDescriptor.Control) != 0;
+            bool isInput = (pd & PortDescriptor.Input) != 0;
+            bool isOutput = (pd & PortDescriptor.Output) != 0;
+
+            if (isAudio)
             {
-                string direction = pd.HasFlag(PortDescriptor.Input) ? "Input" : "Output";
-                Console.WriteLine($"Audio ({direction})");
+                Console.WriteLine($"Audio ({(isInput ? "Input" : "Output")})");
             }
-            else if (pd.HasFlag(PortDescriptor.Control))
+            else if (isControl)
             {
-                Console.WriteLine("Control");
+                Console.WriteLine($"Control ({(isInput ? "Input" : "Output")})");
             }
             else
             {
@@ -77,41 +104,75 @@ string GetSafeString(IntPtr ptr)
 
 void InspectPorts(LadspaDescriptor d)
 {
-    for (int i = 0; i < d.PortCount; i++)
+    for (nuint i = 0; i < d.PortCount; i++)
     {
-        // 1. Get the descriptor bitmask for this port
-        // PortDescriptors is an array of 32-bit uints
-        uint mask = (uint)Marshal.ReadInt32(d.PortDescriptors, i * sizeof(uint));
+        // 1. Get the descriptor bitmask (LADSPA_PortDescriptor is 'int' in C, so 4 bytes)
+        // We cast 'i' to int for the offset, as Marshal.ReadInt32 expects an int offset.
+        int mask = Marshal.ReadInt32(d.PortDescriptors, (int)i * sizeof(int));
         var type = (PortDescriptor)mask;
 
-        // 2. Get the human-readable name of the port
-        IntPtr namePtr = Marshal.ReadIntPtr(d.PortNames, i * IntPtr.Size);
+        // 2. Get the pointer to the name string (Pointer size is 8 bytes on 64-bit)
+        IntPtr namePtr = Marshal.ReadIntPtr(d.PortNames, (int)i * IntPtr.Size);
         string portName = Marshal.PtrToStringAnsi(namePtr) ?? $"Port {i}";
 
-        // 3. Categorize
-        if (type.HasFlag(PortDescriptor.Audio))
+        // 3. Categorize using bitwise checks (slightly more performant than HasFlag)
+        bool isAudio = (type & PortDescriptor.Audio) != 0;
+        bool isControl = (type & PortDescriptor.Control) != 0;
+        bool isInput = (type & PortDescriptor.Input) != 0;
+
+        if (isAudio)
         {
-            string direction = type.HasFlag(PortDescriptor.Input) ? "In" : "Out";
+            string direction = isInput ? "In" : "Out";
             Console.WriteLine($"[AUDIO]  Index {i}: {portName} ({direction})");
         }
-        else if (type.HasFlag(PortDescriptor.Control))
+        else if (isControl)
         {
-            Console.WriteLine($"[KNOB]   Index {i}: {portName}");
+            string direction = isInput ? "Input (Knob)" : "Output (Meter)";
+            Console.WriteLine($"[CONTROL] Index {i}: {portName} ({direction})");
         }
+    }
+}
+
+// JACK -> LADSPA
+
+
+if (null == sc1)
+{
+    Console.WriteLine("We didn't get SC1!!");
+    return;
+}
+
+Console.WriteLine("JackToLadspa_SC1 ...");
+var jackToLadspa_SC1 = new JackToLadspa_SC1();
+var ptrSc1 = LADSPAPlugins[1425];
+
+DebugDescriptor(ptrSc1);
+
+Console.WriteLine("init ...");
+jackToLadspa_SC1.InitializePlugin(sc1.Value, ptrSc1, 48000);
+Console.WriteLine("... init done!!");
+
+void DebugDescriptor(IntPtr ptr)
+{
+    Console.WriteLine($"--- Memory Scan of Descriptor at {ptr:X} ---");
+    for (int i = 0; i < 15; i++)
+    {
+        IntPtr val = Marshal.ReadIntPtr(ptr, i * 8);
+        Console.WriteLine($"Offset {i * 8}: {val:X}");
     }
 }
 
 // JACK --------------   see https://github.com/Beyley/LoudPizza/blob/main/LoudPizza.Backends.Jack2/JackBackend.cs
 var jackTest = new JackTest();
 
-jackTest.Test();
+jackTest.Test(jackToLadspa_SC1);   // we need something way better than this!!!
 
 [DllImport("libjack.so.0", EntryPoint="jack_port_get_buffer")]
 static extern unsafe void* JackPortGetBuffer(IntPtr port, uint nFrames);
 
 class JackTest 
 {
-    public void Test() 
+    public void Test(JackToLadspa_SC1 sc1) 
     {
         try 
         {
@@ -230,13 +291,22 @@ class JackTest
                             float* postInBuf = (float*)_jack.PortGetBuffer(inPortPost, frames);
                             float* postOutBuf = (float*)_jack.PortGetBuffer(outPortPost, frames);
 
-
-                            for (int i = 0; i < frames; i++)
+                            //fixed (float* preInBuf = (float*)_jack.PortGetBuffer(inPortPre, frames))
+                            //fixed (float* preOutBuf = (float*)_jack.PortGetBuffer(outPortPre, frames))
+                            //fixed (float* postInBuf = (float*)_jack.PortGetBuffer(inPortPost, frames))
+                            //fixed (float* postOutBuf = (float*)_jack.PortGetBuffer(outPortPost, frames)) 
                             {
-                                preOutBuf[i] = preInBuf[i] * ATTENUATION_GAIN;
-                                postOutBuf[i] = postInBuf[i] * ATTENUATION_GAIN;
+                                sc1._connectPort(sc1._pluginHandle, JackToLadspa_SC1.SC1_INPUT, (IntPtr)preInBuf);
+                                sc1._connectPort(sc1._pluginHandle, JackToLadspa_SC1.SC1_OUTPUT, (IntPtr)preOutBuf);
+
+                                sc1._runPlugin(sc1._pluginHandle, frames);
+
+                                for (int i = 0; i < frames; i++)
+                                {
+                                    preOutBuf[i] = preInBuf[i] * ATTENUATION_GAIN;
+                                    postOutBuf[i] = postInBuf[i] * ATTENUATION_GAIN;
+                                }                         
                             }
-                            
                         }
                     }
                     catch (Exception handlerEx)
@@ -257,42 +327,49 @@ class JackTest
 
 }
 
-[StructLayout(LayoutKind.Sequential)]
+[StructLayout(LayoutKind.Explicit, Size = 152)] // Increased size to accommodate shift
 public struct LadspaDescriptor
 {
-    public nuint UniqueID;     // Use nuint for 'unsigned long' in C
-    public IntPtr Label;       // char*
-    public nuint Properties;   // Use nuint (8 bytes on 64-bit)
-    public IntPtr Name;        // char*
-    public IntPtr Maker;       // char*
-    public IntPtr Copyright;   // char*
-    public uint PortCount;     // uint is 4 bytes
-    // There is usually 4 bytes of padding here to align the next pointer
-    private uint _padding;     
-    public IntPtr PortDescriptors;
-    public IntPtr PortNames;
-    public IntPtr PortRangeHints;
-    public IntPtr Instantiate;
-    public IntPtr ConnectPort;
-    public IntPtr Activate;
-    public IntPtr Run;
-    public IntPtr RunAdding;
-    public IntPtr SetRunAddingGain;
-    public IntPtr Deactivate;
-    public IntPtr Cleanup;
-}
+    [FieldOffset(0)]  public nuint UniqueID;
+    [FieldOffset(8)]  public IntPtr Label;
+    [FieldOffset(16)] public int Properties;
+    
+    [FieldOffset(24)] public IntPtr Name;
+    [FieldOffset(32)] public IntPtr Maker;
+    [FieldOffset(40)] public IntPtr Copyright;
+    [FieldOffset(48)] public nuint PortCount;
+    [FieldOffset(56)] public IntPtr PortDescriptors;
+    [FieldOffset(64)] public IntPtr PortNames;
+    [FieldOffset(72)] public IntPtr PortRangeHints;
 
+    // --- The Shift Happens Here ---
+    // In your scan, 80 is NULL. We skip it and map Instantiate to 88.
+    
+    [FieldOffset(88)]  public IntPtr Instantiate;   
+    [FieldOffset(96)]  public IntPtr ConnectPort;
+    [FieldOffset(104)] public IntPtr Activate;      // Note: This is 0 in your scan, which is normal (Activate is optional)
+    [FieldOffset(112)] public IntPtr Run;           // This maps to the ...1C20 pointer in your scan
+    
+    [FieldOffset(120)] public IntPtr RunAdding;
+    [FieldOffset(128)] public IntPtr SetRunAddingGain;
+    [FieldOffset(136)] public IntPtr Deactivate;
+    [FieldOffset(144)] public IntPtr Cleanup;
+}
 
 public class LadspaLoader : IDisposable
 {
     private IntPtr _libraryHandle;
-    
+
     // Delegate matching: const LADSPA_Descriptor * ladspa_descriptor(unsigned long Index)
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate IntPtr GetDescriptorDelegate(uint index);
 
-    public LadspaDescriptor? LoadDescriptor(string path, uint index = 0)
+    public LadspaDescriptor? LoadDescriptor(string path, out IntPtr ptr) //uint index = 0)
     {
+        uint index = 0;
+
+        ptr = IntPtr.Zero; // def output
+
         // 1. Load the shared object file
         _libraryHandle = NativeLibrary.Load(path);
         
@@ -305,9 +382,16 @@ public class LadspaLoader : IDisposable
 
         if (descriptorPtr == IntPtr.Zero) return null;
 
+        ptr = descriptorPtr;
+
         // 4. Marshal the pointer into our C# struct
-        return Marshal.PtrToStructure<LadspaDescriptor>(descriptorPtr);
+        LadspaDescriptor r =  Marshal.PtrToStructure<LadspaDescriptor>(descriptorPtr);
+
+        Console.WriteLine($"Ptr = {ptr}");
+
+        return r;
     }
+
 
     public void Dispose()
     {
@@ -330,4 +414,89 @@ public enum PortDescriptor : uint
 public interface IAudioProcessor
 {
     void Process(ReadOnlySpan<float> input, Span<float> output);
+}
+
+public class JackToLadspa_SC1
+{
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate IntPtr InstantiateDelegate(IntPtr descriptor, nuint sampleRate);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void ConnectPortDelegate(IntPtr instance, nuint port, IntPtr dataLocation);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void ActivateDelegate(IntPtr instance);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void RunDelegate(IntPtr instance, uint sampleCount);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void CleanupDelegate(IntPtr instance);
+
+    // Port indices for sc1_1425.so
+    public const uint SC1_ATTACK = 0;
+    public const uint SC1_RELEASE = 1;
+    public const uint SC1_THRESHOLD = 2;
+    public const uint SC1_RATIO = 3;
+    public const uint SC1_KNEE = 4;
+    public const uint SC1_MAKEUP = 5;
+    public const uint SC1_INPUT = 6;
+    public const uint SC1_OUTPUT = 7;
+
+    // Hold the delegates
+    public RunDelegate _runPlugin;
+    public ConnectPortDelegate _connectPort;
+    public IntPtr _pluginHandle;
+
+    // Control variables (must be pinned or unmanaged)
+    private float[] _controls = new float[6]; 
+    private GCHandle _controlsHandle;
+
+    public void InitializePlugin(LadspaDescriptor d, IntPtr handle, int sampleRate)
+    {
+        ActivateDelegate? activate = null;
+        if (d.Activate != IntPtr.Zero)
+        {
+            activate = Marshal.GetDelegateForFunctionPointer<ActivateDelegate>(d.Activate);
+        }
+
+        RunDelegate? run = null;
+        if (d.Run != IntPtr.Zero)
+        {
+            run = Marshal.GetDelegateForFunctionPointer<RunDelegate>(d.Run);
+        }
+        else 
+        {
+            throw new Exception("Critical Error: Plugin has no Run() function!");
+        }
+
+        var instantiate = Marshal.GetDelegateForFunctionPointer<InstantiateDelegate>(d.Instantiate);
+        _connectPort = Marshal.GetDelegateForFunctionPointer<ConnectPortDelegate>(d.ConnectPort);
+        _runPlugin = Marshal.GetDelegateForFunctionPointer<RunDelegate>(d.Run);
+        
+        // 1. Create instance
+        _pluginHandle = instantiate(handle, (nuint)sampleRate);
+
+        // 2. Pin control array and connect control ports
+        _controlsHandle = GCHandle.Alloc(_controls, GCHandleType.Pinned);
+        IntPtr ctrlPtr = _controlsHandle.AddrOfPinnedObject();
+
+        for (uint i = 0; i < 6; i++)
+        {
+            // Connect each control port to the offset in our pinned array
+            _connectPort(_pluginHandle, i, ctrlPtr + (int)(i * sizeof(float)));
+        }
+
+        // Set some default values for SC1
+        _controls[SC1_ATTACK] = 10.0f;    // ms
+        _controls[SC1_RELEASE] = 100.0f;  // ms
+        _controls[SC1_THRESHOLD] = -20.0f; // dB
+        _controls[SC1_RATIO] = 4.0f;      // 4:1
+        _controls[SC1_KNEE] = 5.0f;       // dB
+        _controls[SC1_MAKEUP] = 0.0f;     // dB
+
+        // 3. Activate if available
+        activate?.Invoke(_pluginHandle);
+    }
+
 }
